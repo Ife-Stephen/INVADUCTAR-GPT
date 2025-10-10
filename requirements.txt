@@ -1,0 +1,27 @@
+streamlit
+python-dotenv
+openai
+transformers
+torch
+torchvision
+# Vision
+pillow            # for image loading
+numpy
+gdown
+langgraph
+langchain-core
+accelerate        # improves loading & inference
+sentence-transformers  # optional, for embeddings
+# PDF & text extraction
+pypdf             # lightweight PDF reader
+unstructured      # better PDF parsing (optional, more accurate)
+beautifulsoup4    # to extract hyperlinks from PDF text (if HTML-like)
+lxml              # HTML parsing backend
+
+# Utilities
+tqdm              # progress bars
+
+langchain
+langchain-core 
+langchain-community 
+langchain-text-splitters
