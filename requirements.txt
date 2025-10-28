@@ -25,3 +25,5 @@ langchain
 langchain-core 
 langchain-community 
 langchain-text-splitters
+flask
+flask_cors
