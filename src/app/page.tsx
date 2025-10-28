@@ -120,13 +120,15 @@ export default function Home() {
       } else {
         throw new Error(data.error || 'Failed to clear data');
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Clear data error:', error);
-      
+
       if (error instanceof TypeError && error.message.includes('fetch')) {
         alert(`❌ Cannot connect to server. Please make sure the backend is running at ${API_URL}`);
-      } else {
+      } else if (error instanceof Error) {
         alert(`❌ Failed to clear data: ${error.message}`);
+      } else {
+        alert('❌ Failed to clear data due to an unknown error.');
       }
     }
   };
