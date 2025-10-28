@@ -13,6 +13,16 @@ interface Message {
   timestamp: Date;
 }
 
+interface ChatSession {
+  id: string;
+  title: string;
+  timestamp: Date;
+  messages: Message[];
+}
+
+// API URL configuration
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     { id: 1, message: "Hello! I'm INVADUCTAR GPT, your specialized assistant for invasive ductal carcinoma information. I can help you understand breast cancer diagnosis, treatment options, and provide support. How can I assist you today?", isUser: false, timestamp: new Date() }
@@ -21,6 +31,10 @@ export default function Home() {
   const [isTyping, setIsTyping] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [copyrightExpanded, setCopyrightExpanded] = useState(false);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [privacyExpanded, setPrivacyExpanded] = useState(false);
 
   // Load conversation on mount
   useEffect(() => {
@@ -29,7 +43,7 @@ export default function Home() {
 
   const loadConversation = async () => {
     try {
-      const response = await fetch('/api/conversation');
+      const response = await fetch(`${API_URL}/api/conversation`);
       const data = await response.json();
       
       if (data.success && data.messages.length > 0) {
@@ -52,8 +66,78 @@ export default function Home() {
     }
   };
 
+  const createNewSession = (firstMessage: string) => {
+    const sessionId = Date.now().toString();
+    const title = firstMessage.substring(0, 40) + (firstMessage.length > 40 ? '...' : '');
+    
+    const newSession: ChatSession = {
+      id: sessionId,
+      title,
+      timestamp: new Date(),
+      messages: []
+    };
+    
+    setChatSessions(prev => [newSession, ...prev]);
+    setCurrentSessionId(sessionId);
+    return sessionId;
+  };
+
+  const handleNewConsultation = () => {
+    setMessages([
+      { id: 1, message: "Hello! I'm INVADUCTAR GPT, your specialized assistant for invasive ductal carcinoma information. I can help you understand breast cancer diagnosis, treatment options, and provide support. How can I assist you today?", isUser: false, timestamp: new Date() }
+    ]);
+    setCurrentSessionId(null);
+  };
+
+  const handleClearAllData = async () => {
+    if (!confirm('⚠️ This will permanently delete all your chat history and data from our servers. Are you sure?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/clear-conversation`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server responded with status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        // Clear local state
+        setMessages([
+          { id: 1, message: "Hello! I'm INVADUCTAR GPT, your specialized assistant for invasive ductal carcinoma information. I can help you understand breast cancer diagnosis, treatment options, and provide support. How can I assist you today?", isUser: false, timestamp: new Date() }
+        ]);
+        setChatSessions([]);
+        setCurrentSessionId(null);
+        
+        alert('✅ All your data has been permanently deleted from our servers.');
+      } else {
+        throw new Error(data.error || 'Failed to clear data');
+      }
+    } catch (error) {
+      console.error('Clear data error:', error);
+      
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        alert(`❌ Cannot connect to server. Please make sure the backend is running at ${API_URL}`);
+      } else {
+        alert(`❌ Failed to clear data: ${error.message}`);
+      }
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!inputValue.trim()) return;
+
+    // Create new session if this is the first user message
+    if (messages.length === 1 && !currentSessionId) {
+      createNewSession(inputValue);
+    }
 
     const userMessage: Message = {
       id: Date.now(),
@@ -67,7 +151,7 @@ export default function Home() {
     setIsTyping(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -106,52 +190,64 @@ export default function Home() {
 
   const handleImageUpload = async (file: File) => {
     setIsLoading(true);
-    
+
+    // Create new session if this is the first interaction
+    if (messages.length === 1 && !currentSessionId) {
+      createNewSession(`📸 Uploaded image: ${file.name}`);
+    }
+
     try {
-      const formData = new FormData();
-      formData.append('image', file);
-      
-      const response = await fetch('/api/image', {
-        method: 'POST',
-        body: formData,
-      });
-      
-      const data = await response.json();
-      
-      if (data.success) {
-        const newMessage = {
-          id: messages.length + 1,
-          message: `📸 Uploaded image: ${file.name}`,
-          isUser: true,
-          timestamp: new Date()
-        };
-        
-        const aiResponse = {
-          id: messages.length + 2,
-          message: data.response,
-          isUser: false,
-          timestamp: new Date()
-        };
-        
-        setMessages(prev => [...prev, newMessage, aiResponse]);
-      } else {
-        const errorMessage = {
-          id: messages.length + 1,
-          message: `❌ Image analysis failed: ${data.error}`,
-          isUser: false,
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, errorMessage]);
-      }
-    } catch (error) {
-      console.error('Image upload error:', error);
-      const errorMessage = {
-        id: messages.length + 1,
-        message: "❌ I'm sorry, I couldn't analyze the image. Please ensure it's a valid medical image and try again.",
-        isUser: false,
-        timestamp: new Date()
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64String = reader.result as string;
+
+        const response = await fetch(`${API_URL}/api/analyze-image`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ image: base64String }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          const newMessage: Message = {
+            id: Date.now(),
+            message: `📸 Uploaded image: ${file.name}`,
+            isUser: true,
+            timestamp: new Date(),
+          };
+
+          const aiResponse: Message = {
+            id: Date.now() + 1,
+            message: data.response,
+            isUser: false,
+            timestamp: new Date(),
+          };
+
+          setMessages((prev) => [...prev, newMessage, aiResponse]);
+        } else {
+          const errorMessage: Message = {
+            id: Date.now(),
+            message: `❌ Image analysis failed: ${data.error}`,
+            isUser: false,
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
+        }
       };
-      setMessages(prev => [...prev, errorMessage]);
+
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error("Image upload error:", error);
+      const errorMessage: Message = {
+        id: Date.now(),
+        message: "❌ Failed to analyze image. Please try again.",
+        isUser: false,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
@@ -161,6 +257,60 @@ export default function Home() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
+    }
+  };
+
+  const handleQuickPrompt = async (prompt: string) => {
+    // Create new session if this is the first interaction
+    if (messages.length === 1 && !currentSessionId) {
+      createNewSession(prompt);
+    }
+
+    const userMessage: Message = {
+      id: Date.now(),
+      message: prompt,
+      isUser: true,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setIsTyping(true);
+
+    try {
+      const response = await fetch(`${API_URL}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: prompt
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        const aiResponse: Message = {
+          id: Date.now() + 1,
+          message: data.response,
+          isUser: false,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, aiResponse]);
+      } else {
+        throw new Error(data.error || 'Failed to get response');
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      const errorMessage: Message = {
+        id: Date.now() + 1,
+        message: "I'm sorry, I'm having trouble connecting to the medical AI system. Please try again later.",
+        isUser: false,
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsTyping(false);
     }
   };
 
@@ -198,24 +348,103 @@ export default function Home() {
           padding: '16px',
           borderBottom: '1px solid #0f3460'
         }}>
-          <button style={{
-            width: '100%',
-            padding: '14px',
-            background: 'linear-gradient(135deg, #e53e3e, #c53030)',
-            border: 'none',
-            borderRadius: '8px',
-            color: 'white',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            fontWeight: '600',
-            fontSize: '14px'
-          }}>
+          <button 
+            onClick={handleNewConsultation}
+            style={{
+              width: '100%',
+              padding: '14px',
+              background: 'linear-gradient(135deg, #e53e3e, #c53030)',
+              border: 'none',
+              borderRadius: '8px',
+              color: 'white',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              fontWeight: '600',
+              fontSize: '14px',
+              marginBottom: '12px'
+            }}>
             <span>🩺</span>
             New Consultation
           </button>
+
+          {/* Clear All Data Button */}
+          <button 
+            onClick={handleClearAllData}
+            style={{
+              width: '100%',
+              padding: '12px',
+              background: 'transparent',
+              border: '1px solid #e53e3e',
+              borderRadius: '8px',
+              color: '#e53e3e',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              fontWeight: '600',
+              fontSize: '13px',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = '#e53e3e';
+              e.currentTarget.style.color = 'white';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = '#e53e3e';
+            }}
+          >
+            <span>🗑️</span>
+            Clear All Data
+          </button>
+
+          {/* Privacy Notice - Collapsible */}
+          <div style={{ 
+            marginTop: '12px', 
+            background: '#0f1419',
+            borderRadius: '6px',
+            overflow: 'hidden',
+            border: '1px solid #0f3460'
+          }}>
+            <button
+              onClick={() => setPrivacyExpanded(!privacyExpanded)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'transparent',
+                border: 'none',
+                color: '#a0aec0',
+                fontSize: '11px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                textAlign: 'left'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '14px' }}>🔒</span>
+                <span>Your Privacy Matters</span>
+              </div>
+              <span style={{ fontSize: '14px' }}>{privacyExpanded ? '−' : '+'}</span>
+            </button>
+            
+            {privacyExpanded && (
+              <div style={{ 
+                padding: '0 12px 12px 12px',
+                fontSize: '11px', 
+                color: '#718096',
+                lineHeight: '1.5'
+              }}>
+                Feel free to share your medical information. You have full control - delete all your data anytime using the button above.
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Medical Categories */}
@@ -223,56 +452,134 @@ export default function Home() {
           <div style={{ marginBottom: '12px', fontSize: '14px', color: '#a0aec0', fontWeight: '600' }}>
             📋 Medical Resources
           </div>
-          <div style={{ marginBottom: '8px', fontSize: '14px', color: '#cbd5e0', cursor: 'pointer', padding: '4px 0' }}>
-            🔬 Diagnostic Information
-          </div>
-          <div style={{ marginBottom: '8px', fontSize: '14px', color: '#cbd5e0', cursor: 'pointer', padding: '4px 0' }}>
-            💊 Treatment Guidelines
-          </div>
-          <div style={{ fontSize: '14px', color: '#cbd5e0', cursor: 'pointer', padding: '4px 0' }}>
-            🤝 Support Network
-          </div>
-        </div>
-
-        {/* Specialized Tools */}
-        <div style={{ padding: '16px', borderBottom: '1px solid #0f3460' }}>
-          <div style={{ fontSize: '12px', color: '#a0aec0', marginBottom: '8px', fontWeight: '600' }}>SPECIALIZED TOOLS</div>
-          <div style={{ fontSize: '14px', color: '#cbd5e0', marginBottom: '6px', cursor: 'pointer', padding: '4px 0' }}>
-            🎯 Risk Assessment
-          </div>
-          <div style={{ fontSize: '14px', color: '#cbd5e0', cursor: 'pointer', padding: '4px 0' }}>
-            📊 Treatment Tracker
-          </div>
-        </div>
-
-        {/* Chat History - Only show if there are multiple messages */}
-        {messages.length > 1 && (
-          <div style={{ flex: 1, padding: '16px' }}>
-            <div style={{ fontSize: '12px', color: '#a0aec0', marginBottom: '12px', fontWeight: '600' }}>RECENT CONSULTATIONS</div>
-            {medicalChatHistory.slice(0, Math.min(messages.length - 1, 8)).map((chat, index) => (
-              <div key={index} style={{
-                padding: '10px 12px',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                marginBottom: '4px',
+          {[
+            { title: '🔬 Breast Cancer Guidelines', file: '8577.00.pdf' },
+            { title: '💊 Treatment Protocols', file: '8579.00.pdf' },
+            { title: '🤝 Patient Care Standards', file: '8581.00.pdf' }
+          ].map((resource, index) => (
+            <a
+              key={index}
+              href={`/texts/${resource.file}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '14px',
                 color: '#cbd5e0',
-                background: index === 0 ? '#0f3460' : 'transparent',
-                ':hover': { background: '#0f3460' }
+                cursor: 'pointer',
+                padding: '4px 0',
+                textDecoration: 'none',
+                transition: 'color 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#e53e3e';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = '#cbd5e0';
+              }}
+            >
+              {resource.title}
+            </a>
+          ))}
+          
+          {/* Copyright Notice - Collapsible */}
+          <div style={{ 
+            marginTop: '16px', 
+            background: '#0f1419',
+            borderRadius: '6px',
+            overflow: 'hidden'
+          }}>
+            <button
+              onClick={() => setCopyrightExpanded(!copyrightExpanded)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                background: 'transparent',
+                border: 'none',
+                color: '#a0aec0',
+                fontSize: '11px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                textAlign: 'left'
+              }}
+            >
+              <span>© Copyright Notice</span>
+              <span style={{ fontSize: '14px' }}>{copyrightExpanded ? '−' : '+'}</span>
+            </button>
+            
+            {copyrightExpanded && (
+              <div style={{ 
+                padding: '0 12px 12px 12px',
+                fontSize: '11px', 
+                color: '#718096',
+                lineHeight: '1.5'
               }}>
-                {chat}
+                <div style={{ marginBottom: '6px' }}>
+                  Copyright "Invasive Breast Cancer (IDC/ILC)" American Cancer Society, Inc. Reprinted with permission from www.cancer.org.
+                </div>
+                <div style={{ marginBottom: '6px' }}>
+                  Copyright "Breast Cancer Early Detection and Diagnosis" American Cancer Society, Inc. Reprinted with permission from www.cancer.org.
+                </div>
+                <div>
+                  Copyright "Treating Breast Cancer" American Cancer Society, Inc. Reprinted with permission from www.cancer.org.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Chat History - Show actual sessions */}
+        {chatSessions.length > 0 && (
+          <div style={{ flex: 1, padding: '16px', overflowY: 'auto' }}>
+            <div style={{ fontSize: '12px', color: '#a0aec0', marginBottom: '12px', fontWeight: '600' }}>RECENT CONSULTATIONS</div>
+            {chatSessions.map((session, index) => (
+              <div 
+                key={session.id} 
+                onClick={() => {
+                  setCurrentSessionId(session.id);
+                  // You can load the session messages here if you want to switch between sessions
+                }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  marginBottom: '4px',
+                  color: '#cbd5e0',
+                  background: session.id === currentSessionId ? '#0f3460' : 'transparent',
+                }}
+                onMouseEnter={(e) => {
+                  if (session.id !== currentSessionId) {
+                    e.currentTarget.style.background = '#0f3460';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (session.id !== currentSessionId) {
+                    e.currentTarget.style.background = 'transparent';
+                  }
+                }}
+              >
+                {session.title}
               </div>
             ))}
           </div>
         )}
 
-        {/* User Profile */}
+        {/* Spacer to push patient info to bottom */}
+        {chatSessions.length === 0 && <div style={{ flex: 1 }} />}
+
+        {/* User Profile - Fixed at bottom */}
         <div style={{
           padding: '16px',
           borderTop: '1px solid #0f3460',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px'
+          gap: '12px',
+          marginTop: 'auto'
         }}>
           <div style={{
             width: '36px',
@@ -379,7 +686,7 @@ export default function Home() {
               cursor: 'pointer',
               fontWeight: '600'
             }}>
-              🏥 Connect with Oncologist
+              💝 Donate
             </button>
           </div>
         </div>
@@ -447,19 +754,34 @@ export default function Home() {
                 width: '100%'
               }}>
                 {[
-                  { icon: '🔬', title: 'Understanding IDC', desc: 'Learn about invasive ductal carcinoma' },
-                  { icon: '💊', title: 'Treatment Options', desc: 'Explore available treatments' },
-                  { icon: '🤝', title: 'Support Resources', desc: 'Find emotional and practical support' },
-                  { icon: '📊', title: 'Prognosis Info', desc: 'Understand staging and outcomes' }
+                  { icon: '🔬', title: 'Understanding IDC', desc: 'Learn about invasive ductal carcinoma', prompt: 'Can you explain what invasive ductal carcinoma (IDC) is and how it differs from other types of breast cancer?' },
+                  { icon: '💊', title: 'Treatment Options', desc: 'Explore available treatments', prompt: 'What are the main treatment options available for invasive ductal carcinoma?' },
+                  { icon: '🤝', title: 'Support Resources', desc: 'Find emotional and practical support', prompt: 'What support resources are available for patients diagnosed with invasive ductal carcinoma?' },
+                  { icon: '📊', title: 'Prognosis Info', desc: 'Understand staging and outcomes', prompt: 'Can you explain the staging system for invasive ductal carcinoma and what it means for prognosis?' }
                 ].map((item, index) => (
-                  <div key={index} style={{
-                    padding: '20px',
-                    background: '#16213e',
-                    borderRadius: '12px',
-                    border: '1px solid #0f3460',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}>
+                  <div 
+                    key={index} 
+                    onClick={() => handleQuickPrompt(item.prompt)}
+                    style={{
+                      padding: '20px',
+                      background: '#16213e',
+                      borderRadius: '12px',
+                      border: '1px solid #0f3460',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.2s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = '#0f3460';
+                      e.currentTarget.style.transform = 'translateY(-2px)';
+                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(229, 62, 62, 0.2)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = '#16213e';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                      e.currentTarget.style.boxShadow = 'none';
+                    }}
+                  >
                     <div style={{ fontSize: '24px', marginBottom: '8px' }}>{item.icon}</div>
                     <div style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px', color: 'white' }}>{item.title}</div>
                     <div style={{ fontSize: '14px', color: '#a0aec0' }}>{item.desc}</div>
