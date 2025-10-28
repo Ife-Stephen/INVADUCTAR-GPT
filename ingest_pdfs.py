@@ -63,3 +63,8 @@ def build_vectorstore(persist_dir: str = "rag_store") -> FAISS:
 
     vectordb.save_local(persist_dir)
     return vectordb
+
+if __name__ == "__main__":
+    print("🔄 Building FAISS vector store from PDFs...")
+    build_vectorstore()
+    print("✅ Vector store rebuilt successfully!")
