@@ -3,7 +3,7 @@ import re
 import shutil
 from typing import List, Tuple
 from langchain_core.documents import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from pypdf import PdfReader
@@ -79,4 +79,5 @@ if __name__ == "__main__":
         print("✅ RAG index is ready for use.")
     except Exception as e:
         print(f"❌ Failed to rebuild RAG: {e}")
+
 
