@@ -1,29 +1,19 @@
-streamlit
+flask
+flask_cors
 python-dotenv
-openai
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langgraph
+sentence-transformers
 transformers
 torch
 torchvision
-# Vision
-pillow            # for image loading
+pypdf
+faiss-cpu
+tqdm
 numpy
-gdown
-langgraph
-langchain-core
-accelerate        # improves loading & inference
-sentence-transformers  # optional, for embeddings
-# PDF & text extraction
-pypdf             # lightweight PDF reader
-unstructured      # better PDF parsing (optional, more accurate)
-beautifulsoup4    # to extract hyperlinks from PDF text (if HTML-like)
-lxml              # HTML parsing backend
-
-# Utilities
-tqdm              # progress bars
-
-langchain
-langchain-core 
-langchain-community 
-langchain-text-splitters
-flask
-flask_cors
+pillow
+beautifulsoup4
+lxml
