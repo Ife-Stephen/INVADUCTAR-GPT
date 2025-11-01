@@ -1,44 +1,28 @@
 import os
 import re
-import shutil
 from typing import List, Tuple
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from pypdf import PdfReader
-
-# -----------------------------
-# 🔹 Supabase Integration
-# -----------------------------
 from supabase import create_client
 
+# -----------------------------
+# 🔹 Supabase Setup
+# -----------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_BUCKET = "rag-data"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("⚠️ Warning: Supabase credentials not set. Skipping cloud upload.")
-else:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    raise EnvironmentError("❌ Supabase credentials missing. Please set SUPABASE_URL and SUPABASE_KEY.")
 
-def upload_to_supabase(local_path: str, remote_path: str):
-    """Upload a file to Supabase Storage."""
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return
-    try:
-        with open(local_path, "rb") as f:
-            supabase.storage.from_(SUPABASE_BUCKET).upload(remote_path, f)
-        print(f"📤 Uploaded '{remote_path}' to Supabase bucket '{SUPABASE_BUCKET}'.")
-    except Exception as e:
-        print(f"⚠️ Failed to upload '{remote_path}' to Supabase: {e}")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -----------------------------
 # 🔹 Paths
 # -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEXTS_DIR = os.path.join(BASE_DIR, "texts")
-PERSIST_DIR = os.path.join(BASE_DIR, "rag_store")
 
 
 def extract_text_and_links(pdf_path: str) -> List[Tuple[str, List[str]]]:
@@ -52,8 +36,8 @@ def extract_text_and_links(pdf_path: str) -> List[Tuple[str, List[str]]]:
     return results
 
 
-def build_vectorstore(persist_dir: str = PERSIST_DIR) -> FAISS:
-    """Rebuild the FAISS vector store from all PDFs in texts/."""
+def build_vectorstore():
+    """Extract text, generate embeddings, and upload to Supabase."""
     print("🔍 Scanning PDF files...")
 
     if not os.path.exists(TEXTS_DIR):
@@ -63,13 +47,10 @@ def build_vectorstore(persist_dir: str = PERSIST_DIR) -> FAISS:
     if not pdf_files:
         raise RuntimeError("⚠️ No PDF files found in the 'texts' directory.")
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
-        length_function=len
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    embedder = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    all_docs: List[Document] = []
+    total_chunks = 0
     for fname in pdf_files:
         pdf_path = os.path.join(TEXTS_DIR, fname)
         print(f"📄 Processing {fname}...")
@@ -79,43 +60,30 @@ def build_vectorstore(persist_dir: str = PERSIST_DIR) -> FAISS:
             chunks = splitter.split_text(page_text)
             for chunk in chunks:
                 chunk_links = [url for url in page_links if url in chunk]
-                all_docs.append(
-                    Document(page_content=chunk, metadata={"source": fname, "links": chunk_links})
-                )
+                metadata = {"source": fname, "links": chunk_links}
 
-    print(f"✅ Processed {len(all_docs)} text chunks in total.")
+                # Generate embedding
+                embedding = embedder.embed_query(chunk)
 
-    # Rebuild FAISS index
-    if os.path.exists(persist_dir):
-        shutil.rmtree(persist_dir)
-    os.makedirs(persist_dir, exist_ok=True)
+                # Insert into Supabase
+                try:
+                    supabase.table("embeddings").insert({
+                        "content": chunk,
+                        "metadata": metadata,
+                        "embedding": embedding
+                    }).execute()
+                    total_chunks += 1
+                except Exception as e:
+                    print(f"⚠️ Failed to insert chunk: {e}")
 
-    print("⚙️ Generating embeddings...")
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectordb = FAISS.from_documents(all_docs, embeddings)
-    vectordb.save_local(persist_dir)
-
-    print("🎉 Vector store rebuilt successfully!")
-
-    # -----------------------------
-    # ☁️ Upload FAISS index to Supabase
-    # -----------------------------
-    faiss_index = os.path.join(persist_dir, "index.faiss")
-    faiss_pkl = os.path.join(persist_dir, "index.pkl")
-
-    if os.path.exists(faiss_index):
-        upload_to_supabase(faiss_index, "index.faiss")
-    if os.path.exists(faiss_pkl):
-        upload_to_supabase(faiss_pkl, "index.pkl")
-
-    print("☁️ FAISS index uploaded to Supabase cloud.")
-    return vectordb
+    print(f"🎉 Successfully uploaded {total_chunks} chunks to Supabase `embeddings` table.")
+    print("✅ RAG index is now stored in the cloud (pgvector).")
 
 
 if __name__ == "__main__":
-    print("🔄 Starting RAG rebuild process...")
+    print("🔄 Starting RAG ingestion...")
     try:
         build_vectorstore()
-        print("✅ RAG index is ready for use.")
+        print("✅ All done!")
     except Exception as e:
-        print(f"❌ Failed to rebuild RAG: {e}")
+        print(f"❌ Failed to build RAG index: {e}")
