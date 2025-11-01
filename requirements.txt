@@ -20,4 +20,5 @@ lxml
 accelerate
 sentence-transformers
 faiss-cpu
+supabase
 
