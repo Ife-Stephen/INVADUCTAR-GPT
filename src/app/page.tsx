@@ -21,7 +21,7 @@ interface ChatSession {
 }
 
 // API URL configuration
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://invaductar-gpt.onrender.com';
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
