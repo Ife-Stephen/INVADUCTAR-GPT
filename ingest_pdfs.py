@@ -8,10 +8,38 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from pypdf import PdfReader
 
-# Paths
+# -----------------------------
+# 🔹 Supabase Integration
+# -----------------------------
+from supabase import create_client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_BUCKET = "rag-data"
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("⚠️ Warning: Supabase credentials not set. Skipping cloud upload.")
+else:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def upload_to_supabase(local_path: str, remote_path: str):
+    """Upload a file to Supabase Storage."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        with open(local_path, "rb") as f:
+            supabase.storage.from_(SUPABASE_BUCKET).upload(remote_path, f)
+        print(f"📤 Uploaded '{remote_path}' to Supabase bucket '{SUPABASE_BUCKET}'.")
+    except Exception as e:
+        print(f"⚠️ Failed to upload '{remote_path}' to Supabase: {e}")
+
+# -----------------------------
+# 🔹 Paths
+# -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEXTS_DIR = os.path.join(BASE_DIR, "texts")
 PERSIST_DIR = os.path.join(BASE_DIR, "rag_store")
+
 
 def extract_text_and_links(pdf_path: str) -> List[Tuple[str, List[str]]]:
     """Extract text and links from a PDF file."""
@@ -64,11 +92,23 @@ def build_vectorstore(persist_dir: str = PERSIST_DIR) -> FAISS:
 
     print("⚙️ Generating embeddings...")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
     vectordb = FAISS.from_documents(all_docs, embeddings)
     vectordb.save_local(persist_dir)
 
     print("🎉 Vector store rebuilt successfully!")
+
+    # -----------------------------
+    # ☁️ Upload FAISS index to Supabase
+    # -----------------------------
+    faiss_index = os.path.join(persist_dir, "index.faiss")
+    faiss_pkl = os.path.join(persist_dir, "index.pkl")
+
+    if os.path.exists(faiss_index):
+        upload_to_supabase(faiss_index, "index.faiss")
+    if os.path.exists(faiss_pkl):
+        upload_to_supabase(faiss_pkl, "index.pkl")
+
+    print("☁️ FAISS index uploaded to Supabase cloud.")
     return vectordb
 
 
@@ -79,5 +119,3 @@ if __name__ == "__main__":
         print("✅ RAG index is ready for use.")
     except Exception as e:
         print(f"❌ Failed to rebuild RAG: {e}")
-
-
