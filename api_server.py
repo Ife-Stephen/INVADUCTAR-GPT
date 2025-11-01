@@ -1,29 +1,33 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-import json
-import base64
-import traceback
+import os, json, base64, traceback
+from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from agent import agent
 from tools import analyze_image, explain_result
-from datetime import datetime
+from supabase import create_client, Client
+from openai import OpenAI
 
+# -----------------------------
+# 🔹 Initialize
+# -----------------------------
 app = Flask(__name__)
-# Allow all origins for development
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-DATA_FILE = "conversation.json"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------
-# 🔹 Conversation Persistence
+# 🔹 Conversation Persistence in Supabase
 # -----------------------------
 def load_conversation():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
+    try:
+        res = supabase.table("conversations").select("messages").order("created_at", desc=True).limit(1).execute()
+        if res.data and len(res.data) > 0:
+            raw = res.data[0]["messages"]
             messages = []
             for m in raw:
                 t = m.get("type", "")
@@ -34,39 +38,33 @@ def load_conversation():
                 elif t == "tool":
                     messages.append(ToolMessage(content=m["content"], tool_call_id=m.get("tool_call_id", "")))
             return messages
-        except Exception as e:
-            print(f"⚠️ Failed to load conversation: {e}")
+    except Exception as e:
+        print(f"⚠️ Failed to load conversation: {e}")
     return []
 
-
 def save_conversation(messages):
-    serializable = []
-    for m in messages:
-        if isinstance(m, HumanMessage):
-            serializable.append({"type": "human", "content": m.content})
-        elif isinstance(m, AIMessage):
-            serializable.append({"type": "ai", "content": m.content})
-        elif isinstance(m, ToolMessage):
-            serializable.append({"type": "tool", "content": m.content})
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(serializable, f, indent=2)
-
+    try:
+        serializable = []
+        for m in messages:
+            if isinstance(m, HumanMessage):
+                serializable.append({"type": "human", "content": m.content})
+            elif isinstance(m, AIMessage):
+                serializable.append({"type": "ai", "content": m.content})
+            elif isinstance(m, ToolMessage):
+                serializable.append({"type": "tool", "content": m.content})
+        supabase.table("conversations").insert({"messages": serializable}).execute()
+    except Exception as e:
+        print(f"⚠️ Failed to save conversation: {e}")
 
 # -----------------------------
 # 🔹 Helper: Clean AI Output
 # -----------------------------
 def extract_final_response(content: str) -> str:
-    """Remove thought-process text and return a clean assistant response."""
     if not content:
         return ""
     lines = content.splitlines()
-    filtered = []
-    for line in lines:
-        if not any(x in line.lower() for x in ["thought", "reasoning", "step", "analyz", "hmm"]):
-            filtered.append(line.strip())
-    result = "\n".join(filtered).strip()
-    return result or content.strip()
-
+    filtered = [line.strip() for line in lines if not any(x in line.lower() for x in ["thought", "reasoning", "step", "analyz", "hmm"])]
+    return "\n".join(filtered).strip() or content.strip()
 
 # -----------------------------
 # 🔹 Chat Route (Text only)
@@ -84,7 +82,6 @@ def chat():
 
         result = agent.invoke({"messages": conversation})
         conversation = result["messages"]
-
         save_conversation(conversation)
 
         ai_reply = next(
@@ -100,11 +97,10 @@ def chat():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"success": False, "error": f"Chat processing failed: {e}"}), 500
-
+        return jsonify({"success": False, "error": f"Chat failed: {e}"}), 500
 
 # -----------------------------
-# 🔹 Image Analysis Route
+# 🔹 Image Analysis (uploads to Supabase)
 # -----------------------------
 @app.route("/api/analyze-image", methods=["POST"])
 def analyze_image_route():
@@ -114,35 +110,26 @@ def analyze_image_route():
         if not image_data or "," not in image_data:
             return jsonify({"success": False, "error": "Invalid or missing image data"}), 400
 
-        # Decode and save the uploaded image
         image_bytes = base64.b64decode(image_data.split(",")[1])
-        tmp_dir = "uploads"
-        os.makedirs(tmp_dir, exist_ok=True)
-        tmp_path = os.path.join(
-            tmp_dir, f"mammogram_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        )
-        with open(tmp_path, "wb") as f:
-            f.write(image_bytes)
+        filename = f"mammogram_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        file_path = f"uploads/{filename}"
 
-        print(f"📸 Image saved to {tmp_path}")
+        # 🟢 Upload image to Supabase
+        supabase.storage.from_("uploads").upload(file_path, image_bytes)
+        public_url = supabase.storage.from_("uploads").get_public_url(file_path)
 
-        # Build the command string the agent expects
-        command = f"ANALYZE_IMAGE: {tmp_path}"
-
-        # Call the agent
+        command = f"ANALYZE_IMAGE: {public_url}"
         analysis = analyze_image.invoke(command)
         if not analysis or "error" in analysis:
             err = analysis.get("error", "Unknown error")
             print(f"❌ Analysis failed: {err}")
-            return jsonify({"success": False, "error": f"Image analysis failed: {err}"}), 500
+            return jsonify({"success": False, "error": f"Analysis failed: {err}"}), 500
 
-        # Optional explanation step
         explanation = explain_result.invoke({"result": analysis})
-        ai_response = explanation.get("result", "⚠️ No detailed explanation generated.")
+        ai_response = explanation.get("result", "⚠️ No explanation generated.")
 
-        # Update conversation memory
         conversation = load_conversation()
-        conversation.append(HumanMessage(content=f"User uploaded image for analysis: {tmp_path}"))
+        conversation.append(HumanMessage(content=f"User uploaded image: {public_url}"))
         conversation.append(ToolMessage(content=str(analysis), tool_call_id="analyze_image"))
         conversation.append(AIMessage(content=ai_response))
         save_conversation(conversation)
@@ -152,64 +139,54 @@ def analyze_image_route():
             "response": extract_final_response(ai_response),
             "analysis": analysis,
             "timestamp": datetime.now().isoformat(),
-            "image_path": tmp_path
+            "image_url": public_url
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": f"❌ Image analysis failed: {e}"}), 500
 
-
 # -----------------------------
-# 🔹 Conversation Routes
+# 🔹 Embeddings (store & query via Supabase)
 # -----------------------------
-@app.route("/api/conversation", methods=["GET"])
-def get_conversation():
+@app.route("/api/embed", methods=["POST"])
+def embed_text():
     try:
-        conversation = load_conversation()
-        messages = []
-        for msg in conversation:
-            if isinstance(msg, HumanMessage):
-                messages.append({"type": "user", "content": msg.content})
-            elif isinstance(msg, AIMessage):
-                messages.append({"type": "ai", "content": extract_final_response(msg.content)})
-        return jsonify({"success": True, "messages": messages})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        text = request.json.get("text", "")
+        if not text:
+            return jsonify({"success": False, "error": "Text cannot be empty."}), 400
 
+        vector = openai_client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding
+        supabase.table("embeddings").insert({
+            "content": text,
+            "vector": vector,
+            "metadata": {"source": "api_upload"}
+        }).execute()
 
-@app.route("/api/clear-conversation", methods=["POST"])
-def clear_conversation():
-    try:
-        # Delete conversation file
-        if os.path.exists(DATA_FILE):
-            os.remove(DATA_FILE)
-        
-        # Delete all uploaded images
-        uploads_dir = "uploads"
-        if os.path.exists(uploads_dir):
-            for filename in os.listdir(uploads_dir):
-                file_path = os.path.join(uploads_dir, filename)
-                try:
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                except Exception as e:
-                    print(f"⚠️ Failed to delete {file_path}: {e}")
-        
-        print("✅ All user data cleared successfully")
-        return jsonify({"success": True, "message": "All conversation data and uploaded images have been permanently deleted."})
+        return jsonify({"success": True, "message": "Embedding stored successfully"})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/search", methods=["POST"])
+def semantic_search():
+    try:
+        query = request.json.get("query", "")
+        if not query:
+            return jsonify({"success": False, "error": "Query cannot be empty."}), 400
+
+        q_emb = openai_client.embeddings.create(model="text-embedding-3-small", input=query).data[0].embedding
+        res = supabase.rpc("match_embeddings", {"query_embedding": q_emb, "match_threshold": 0.7, "match_count": 5}).execute()
+
+        return jsonify({"success": True, "results": res.data})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # -----------------------------
-# 🔹 Server Start
+# 🔹 Server
 # -----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render provides PORT env var
-    print(f"🚀 Starting Flask server on http://0.0.0.0:{port}")
-    print("✅ CORS enabled for all origins")
-
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Running on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
-
