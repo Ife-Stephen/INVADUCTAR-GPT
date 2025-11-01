@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import base64
 import traceback
 import json
@@ -8,17 +7,15 @@ from datetime import datetime
 from typing import List, Tuple
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from pypdf import PdfReader
 from supabase import create_client, Client
-from openai import OpenAI
+from agent import agent
+from tools import analyze_image, explain_result
+from pypdf import PdfReader
 
 # -----------------------------
-# 🔹 App Setup
+# 🔹 Flask App Setup
 # -----------------------------
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -33,78 +30,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("❌ Missing Supabase credentials. Set SUPABASE_URL and SUPABASE_KEY.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEXTS_DIR = os.path.join(BASE_DIR, "texts")
-PERSIST_DIR = os.path.join(BASE_DIR, "rag_store")
-
-# Import your LangChain agent + tools
-from agent import agent
-from tools import analyze_image, explain_result
-
-# -----------------------------
-# 🔹 Upload to Supabase Storage
-# -----------------------------
-def upload_to_supabase(local_path: str, remote_path: str, bucket: str = "rag-data"):
-    try:
-        with open(local_path, "rb") as f:
-            supabase.storage.from_(bucket).upload(remote_path, f)
-        print(f"📤 Uploaded '{remote_path}' to Supabase bucket '{bucket}'.")
-    except Exception as e:
-        print(f"⚠️ Failed to upload '{remote_path}' to Supabase: {e}")
-
-# -----------------------------
-# 🔹 PDF RAG Builder
-# -----------------------------
-def extract_text_and_links(pdf_path: str) -> List[Tuple[str, List[str]]]:
-    reader = PdfReader(pdf_path)
-    results = []
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        links = re.findall(r"https?://\S+", text)
-        results.append((text, links))
-    return results
-
-
-def build_vectorstore(persist_dir: str = PERSIST_DIR) -> FAISS:
-    print("🔍 Scanning PDF files...")
-
-    if not os.path.exists(TEXTS_DIR):
-        raise FileNotFoundError(f"❌ Folder not found: {TEXTS_DIR}")
-
-    pdf_files = [f for f in os.listdir(TEXTS_DIR) if f.lower().endswith(".pdf")]
-    if not pdf_files:
-        raise RuntimeError("⚠️ No PDF files found in 'texts' directory.")
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    all_docs: List[Document] = []
-
-    for fname in pdf_files:
-        pdf_path = os.path.join(TEXTS_DIR, fname)
-        print(f"📄 Processing {fname}...")
-        pages = extract_text_and_links(pdf_path)
-
-        for page_text, page_links in pages:
-            chunks = splitter.split_text(page_text)
-            for chunk in chunks:
-                chunk_links = [url for url in page_links if url in chunk]
-                all_docs.append(Document(page_content=chunk, metadata={"source": fname, "links": chunk_links}))
-
-    print(f"✅ Processed {len(all_docs)} chunks.")
-
-    if os.path.exists(persist_dir):
-        shutil.rmtree(persist_dir)
-    os.makedirs(persist_dir, exist_ok=True)
-
-    print("⚙️ Generating embeddings...")
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectordb = FAISS.from_documents(all_docs, embeddings)
-    vectordb.save_local(persist_dir)
-
-    upload_to_supabase(os.path.join(persist_dir, "index.faiss"), "index.faiss")
-    upload_to_supabase(os.path.join(persist_dir, "index.pkl"), "index.pkl")
-    print("🎉 Vector store uploaded to Supabase.")
-    return vectordb
+embedder = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 # -----------------------------
 # 🔹 Conversation Persistence
@@ -223,7 +149,7 @@ def analyze_image_route():
         return jsonify({"success": False, "error": f"Image analysis failed: {e}"}), 500
 
 # -----------------------------
-# 🔹 Embeddings API
+# 🔹 Embeddings API (Hugging Face + Supabase)
 # -----------------------------
 @app.route("/api/embed", methods=["POST"])
 def embed_text():
@@ -232,17 +158,20 @@ def embed_text():
         if not text:
             return jsonify({"success": False, "error": "Text cannot be empty."}), 400
 
-        vector = openai_client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding
+        embedding = embedder.embed_query(text)
         supabase.table("embeddings").insert({
             "content": text,
-            "vector": vector,
-            "metadata": {"source": "api_upload"}
+            "metadata": {"source": "api_upload"},
+            "embedding": embedding
         }).execute()
         return jsonify({"success": True, "message": "Embedding stored successfully"})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
+# -----------------------------
+# 🔹 Semantic Search
+# -----------------------------
 @app.route("/api/search", methods=["POST"])
 def semantic_search():
     try:
@@ -250,19 +179,21 @@ def semantic_search():
         if not query:
             return jsonify({"success": False, "error": "Query cannot be empty."}), 400
 
-        q_emb = openai_client.embeddings.create(model="text-embedding-3-small", input=query).data[0].embedding
+        query_embedding = embedder.embed_query(query)
+
         res = supabase.rpc("match_embeddings", {
-            "query_embedding": q_emb,
+            "query_embedding": query_embedding,
             "match_threshold": 0.7,
             "match_count": 5
         }).execute()
+
         return jsonify({"success": True, "results": res.data})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 # -----------------------------
-# 🔹 Run Server
+# 🔹 Server Start
 # -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
