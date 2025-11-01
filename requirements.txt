@@ -21,4 +21,5 @@ accelerate
 sentence-transformers
 faiss-cpu
 supabase
+gunicorn
 
