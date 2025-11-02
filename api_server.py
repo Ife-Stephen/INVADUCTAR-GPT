@@ -8,11 +8,11 @@ from typing import List, Tuple
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# from langchain_community.embeddings import HuggingFaceEmbeddings
 from supabase import create_client, Client
 from agent import agent
 from tools import analyze_image, explain_result
-from pypdf import PdfReader
+# from pypdf import PdfReader
 
 # -----------------------------
 # 🔹 Flask App Setup
