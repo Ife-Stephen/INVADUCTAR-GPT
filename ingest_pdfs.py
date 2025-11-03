@@ -2,9 +2,9 @@ import os
 import re
 from typing import List, Tuple
 from langchain_core.documents import Document
-# from langchain_text_splitters import RecursiveCharacterTextSplitter
-# from langchain_community.embeddings import HuggingFaceEmbeddings
-# from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from pypdf import PdfReader
 from supabase import create_client
 
 # -----------------------------
@@ -87,4 +87,5 @@ if __name__ == "__main__":
         print("✅ All done!")
     except Exception as e:
         print(f"❌ Failed to build RAG index: {e}")
+
 
